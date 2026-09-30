@@ -1,0 +1,319 @@
+LLD/Machine Coding w/ Implementation: “Rate Limiter”
+Saurabh Choudhary
+Saurabh Choudhary
+6 min read
+·
+Apr 4, 2025
+--
+
+
+8
+
+
+
+
+
+Content
+Problem Statement
+a. Functional Requirements
+b. Non-functional Requirements
+c. Example
+Identifying Key Classes
+Class Diagram
+Implementation
+Conclusion
+Problem Statement
+Design a Rate-Limiting System that restricts the number of API requests a user can make within a given time window.
+The system should support different rate-limiting algorithms, allowing them to be configured and extended easily.
+
+Press enter or click to view image in full size
+
+Photo by Lucas van Oort on Unsplash
+Functional Requirements
+1. Configurable Rate Limits
+The system should allow defining rate limits per user. A rate limit consists of:
+
+User ID (identifier for the user).
+Maximum Requests (number of allowed requests).
+Time Window (duration in seconds).
+Rate-Limiting Algorithm (e.g., Counter, Token Bucket, Leaky Bucket).
+Users can have different rate limits based on their tier (e.g., Free vs. Premium users).
+
+Users can have a different rate-limiting algorithm assigned, depending on their needs.
+
+2. Request Handling
+When a user makes an API request, the system should check if the request exceeds the configured limit.
+If within the limit → ✅ Allow the request.
+If exceeding the limit → ❌ Reject the request with an error message.
+3. Support for Multiple Rate-Limiting Algorithms
+The system should allow different algorithms to be plugged in and swapped quickly:
+
+Counter-Based Approach: A simple counter that resets after every time window (fixed window rate limiting).
+Sliding Window: Maintains a log of past requests and checks how many occurred within the last X seconds.
+Token Bucket: Requests consume tokens, which regenerate at a fixed rate.
+Leaky Bucket: Requests are processed at a fixed rate, preventing sudden bursts.
+The system should be extensible to add new algorithms without modifying the core logic.
+
+4. Examples:
+Example 1: Counter-Based Rate Limiting
+
+Scenario:
+A user (user_1) has a limit of 5 requests per 10 seconds using the counter-based approach.
+
+⏳ Requests Timeline:
+✅ T=0s → Allowed
+✅ T=2s → Allowed
+✅ T=4s → Allowed
+✅ T=6s → Allowed
+✅ T=8s → Allowed
+❌ T=9s → Rejected (Rate limit exceeded)
+✅ T=10s → Allowed (New window starts)
+
+Example 2: Sliding Window Rate Limiting
+
+Scenario:
+Using the Sliding Window approach, a user has a limit of 3 requests per 5 seconds.
+
+⏳ Requests Timeline:
+✅ T=1s → Allowed
+✅ T=2s → Allowed
+✅ T=3s → Allowed
+❌ T=4s → Rejected (Rate limit exceeded)
+❌ T=5s → Rejected (At this moment, valid requests are: [T=1s, T=2s, T=3s])
+✅ T=6s → Allowed (Since T=1s request is out of the window)
+
+Non-Functional Requirements
+1. Extensibility
+The system should be designed using an extensible architecture.
+Adding a new rate-limiting algorithm should be easy.
+2. Performance
+Rate limit checks should have a low latency to handle high traffic.
+Should use efficient data structures (queues, maps, etc.).
+3. Concurrency
+Multiple requests from the same user should be handled safely in a multi-threaded environment.
+The rate limit counters should be updated atomically.
+Identifying Key Classes
+RateLimiter (interface)
+Defines the contract that all rate-limiting algorithms must follow.
+
+RateLimiter Implementations
+Each of these implements the RateLimiter interface, encapsulating a different algorithm.
+
+FixedWindowRateLimiter: A simple counter that resets every fixed interval.
+SlidingWindowRateLimiter: Maintains timestamps of past requests within a moving time window.
+TokenBucketRateLimiter: Generates tokens at a steady rate. Requests consume tokens; burst traffic is allowed if tokens are available.
+LeakyBucketRateLimiter: Queue-based; holds requests and processes at a constant rate (like water leaking). Prevents sudden bursts from overloading the system.
+RateLimiterFactory
+Creates appropriate RateLimiter instance based on configuration.
+
+RateLimiterService
+Acts as the controller or manager that:
+
+Maintains user-specific configurations.
+Delegates request checks to the corresponding RateLimiter instances.
+Main
+Acts as an entry point to test or simulate the system.
+
+Class Diagram
+Press enter or click to view image in full size
+
+Class Diagram: In Memory Rate Limiter System
+Implementation
+RateLimiter (interface)
+public interface RateLimiter {
+    boolean allowRequest(String userId);
+}
+RateLimiter Implementations
+FixedWindowRateLimiter —
+
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+
+public class FixedWindowRateLimiter implements RateLimiter {
+    private final int maxRequests;
+    private final long windowSizeMillis;
+    private final Map<String, Integer> requestCounts = new ConcurrentHashMap<>();
+    private long windowStart;
+
+    public FixedWindowRateLimiter(int maxRequests, long windowSizeMillis) {
+        this.maxRequests = maxRequests;
+        this.windowSizeMillis = windowSizeMillis;
+        this.windowStart = System.currentTimeMillis();
+    }
+
+    @Override
+    public synchronized boolean allowRequest(String userId) {
+        long currentTime = System.currentTimeMillis();
+        if (currentTime - windowStart >= windowSizeMillis) {
+            requestCounts.remove(userId);
+            windowStart = currentTime;
+        }
+        requestCounts.put(userId, requestCounts.getOrDefault(userId, 0)+1);
+        return requestCounts.get(userId) <= maxRequests;
+    }
+}
+SlidingWindowRateLimiter —
+
+import java.util.Deque;
+import java.util.LinkedList;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+
+public class SlidingWindowRateLimiter implements RateLimiter {
+    private final int maxRequests;
+    private final long windowSizeMillis;
+    private final Map<String, Deque<Long>> requestLogs = new ConcurrentHashMap<>();
+
+    public SlidingWindowRateLimiter(int maxRequests, long windowSizeMillis) {
+        this.maxRequests = maxRequests;
+        this.windowSizeMillis = windowSizeMillis;
+
+    }
+
+    @Override
+    public synchronized boolean allowRequest(String userId) {
+        long currentTime = System.currentTimeMillis();
+        requestLogs.putIfAbsent(userId, new LinkedList<>());
+        Deque<Long> timestamps = requestLogs.get(userId);
+        while (!timestamps.isEmpty() && currentTime - timestamps.peek() >= windowSizeMillis) {
+            timestamps.pollFirst();
+        }
+        if (timestamps.size() < maxRequests) {
+            timestamps.add(currentTime);
+            return true;
+        }
+        return false;
+    }
+}
+TokenBucketRateLimiter —
+
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+
+public class TokenBucketRateLimiter implements RateLimiter {
+    private final int capacity;
+    private final double refillRate;
+    private final Map<String, Integer> tokens = new ConcurrentHashMap<>();
+    private final Map<String, Long> lastRefillTimestamp = new ConcurrentHashMap<>();
+
+    public TokenBucketRateLimiter(int capacity, double refillRate) {
+        this.capacity = capacity;
+        this.refillRate = refillRate;
+    }
+
+    @Override
+    public synchronized boolean allowRequest(String userId) {
+        long currentTime = System.currentTimeMillis();
+        lastRefillTimestamp.putIfAbsent(userId, currentTime);
+        tokens.putIfAbsent(userId, capacity);
+        long lastRefill = lastRefillTimestamp.get(userId);
+        long elapsedTime = (currentTime - lastRefill) / 1000;
+        if (elapsedTime > 0) {
+            int newTokens = Math.min(capacity, tokens.get(userId) + (int)(elapsedTime*refillRate));
+            tokens.put(userId, newTokens);
+            lastRefillTimestamp.put(userId, currentTime);
+        }
+        if (tokens.get(userId) > 0) {
+            tokens.put(userId, tokens.get(userId)-1);
+            return true;
+        }
+        return false;
+    }
+}
+LeakyBucketRateLimiter —
+
+import java.util.LinkedList;
+import java.util.Queue;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+
+public class LeakyBucketRateLimiter implements RateLimiter {
+    private final int capacity;
+    private final long leakRateSecs;
+    private final Queue<Long> bucket = new LinkedList<>();
+    private final ScheduledExecutorService scheduledExecutorService;
+
+    public LeakyBucketRateLimiter(int capacity, long leakRateSecs) {
+        this.capacity = capacity;
+        this.leakRateSecs = leakRateSecs;
+        this.scheduledExecutorService = Executors.newScheduledThreadPool(1);
+        scheduledExecutorService.scheduleAtFixedRate(this::leakRequests, 0, leakRateSecs, TimeUnit.SECONDS);
+    }
+
+    @Override
+    public synchronized boolean allowRequest(String userId) {
+        long currentTime = System.currentTimeMillis();
+        if (bucket.size() < capacity) {
+            bucket.offer(currentTime);
+            return true;
+        }
+        return false;
+    }
+
+    private synchronized void leakRequests() {
+        if (!bucket.isEmpty()) {
+            bucket.poll();//Request processed
+        }
+    }
+}
+RateLimiterFactory
+public class RateLimiterFactory {
+    public static RateLimiter createRateLimiter(String type, int maxRequests, long windowSizeMillis) {
+        return switch (type) {
+            case "fixed" -> new FixedWindowRateLimiter(maxRequests, windowSizeMillis);
+            case "sliding" -> new SlidingWindowRateLimiter(maxRequests, windowSizeMillis);
+            case "token-bucket" ->
+                    new TokenBucketRateLimiter(maxRequests, (1.0 * maxRequests / windowSizeMillis * 1000));
+            case "leaky-bucket" ->
+                    new LeakyBucketRateLimiter(maxRequests, (int) (1.0 * maxRequests / windowSizeMillis * 1000));
+            default -> throw new IllegalArgumentException("Unsupported type.");
+        };
+    }
+}
+RateLimiterService
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+
+public class RateLimiterService {
+    private final Map<String, RateLimiter> userRateLimiters = new ConcurrentHashMap<>();
+
+    public void registerUser(String userId, String algorithm, int maxRequests, long windowSizeSeconds) {
+        userRateLimiters.put(userId, RateLimiterFactory.createRateLimiter(algorithm, maxRequests, windowSizeSeconds * 1000));
+    }
+
+    public boolean allowRequest(String userId) {
+        RateLimiter rateLimiter = userRateLimiters.get(userId);
+        if (rateLimiter == null) throw new IllegalArgumentException("User not registered");
+        return rateLimiter.allowRequest(userId);
+    }
+}
+Main
+public class Main {
+    public static void main(String[] args) throws InterruptedException {
+        RateLimiterService service = new RateLimiterService();
+
+        service.registerUser("user_1", "fixed", 5, 10);
+        service.registerUser("user_2", "sliding", 3, 5);
+        service.registerUser("user_3", "token-bucket", 5, 10);
+        service.registerUser("user_4", "leaky-bucket", 3, 4);
+
+        for (int i = 0; i < 7; i++) {
+            System.out.println("User 1 Request " + (i + 1) + " : " + service.allowRequest("user_1"));
+            System.out.println("User 2 Request " + (i + 1) + " : " + service.allowRequest("user_2"));
+            System.out.println("User 3 Request " + (i + 1) + " : " + service.allowRequest("user_3"));
+            System.out.println("User 4 Request " + (i + 1) + " : " + service.allowRequest("user_4"));
+            Thread.sleep(1000);
+        }
+    }
+}
+Conclusion
+This Rate Limiting System is thoughtfully designed to fulfill all the functional and non-functional requirements in a clean, modular, and extensible manner.
+
+At its core, the system allows each user to be assigned a customizable rate limit, including parameters such as request count, time window, and the specific algorithm to enforce it. It supports multiple rate-limiting strategies — Fixed Window, Sliding Window, Token Bucket, and Leaky Bucket — each encapsulated behind a common interface — RateLimiter, enabling seamless configuration and easy swapping of algorithms based on user tier or behavior. The request-handling flow is intuitive: every incoming request is evaluated by the user’s configured rate limiter, and the system either accepts or rejects it based on defined constraints.
+
+On the non-functional side, the architecture emphasizes extensibility and maintainability. The use of design patterns like Strategy and Factory ensures that adding new algorithms requires minimal changes — developers only need to implement the interface and register the new class in the factory.
+
+Performance is prioritized through the use of efficient, low-latency data structures such as queues and atomic counters, making the system suitable for high-traffic environments. Concurrency is handled gracefully using thread-safe collections and synchronization, ensuring consistent behavior even under simultaneous requests.
+
+Overall, the implementation is clean, adheres to SOLID principles, and offers a robust foundation for real-world rate-limiting needs.
